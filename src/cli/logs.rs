@@ -29,7 +29,7 @@ pub fn execute(name: &str, follow: bool, tail: usize, db: &StateDatabase) -> Res
             // Read last N lines first
             file.seek(SeekFrom::Start(0))?;
             let reader = BufReader::new(&file);
-            let mut lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
+            let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
 
             let start_idx = if lines.len() > tail {
                 lines.len() - tail

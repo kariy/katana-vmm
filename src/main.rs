@@ -104,6 +104,20 @@ enum Commands {
         #[arg(short = 'n', long, default_value = "100")]
         tail: usize,
     },
+
+    /// View instance statistics
+    Stats {
+        /// Instance name
+        name: String,
+
+        /// Watch mode (continuous updates)
+        #[arg(short, long)]
+        watch: bool,
+
+        /// Update interval in seconds (for watch mode)
+        #[arg(long, default_value = "2")]
+        interval: u64,
+    },
 }
 
 fn main() -> Result<()> {
@@ -181,6 +195,9 @@ fn main() -> Result<()> {
         }
         Commands::Logs { name, follow, tail } => {
             katana_hypervisor::cli::logs::execute(&name, follow, tail, &db)?;
+        }
+        Commands::Stats { name, watch, interval } => {
+            katana_hypervisor::cli::stats::execute(&name, watch, interval, &db, &vm_manager)?;
         }
     }
 
