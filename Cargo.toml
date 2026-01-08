@@ -45,6 +45,7 @@ sha2 = "0.10"
 
 # HTTP client (for RPC calls to katana)
 reqwest = { version = "0.12", features = ["json"] }
+ureq = "2.10"
 
 # Time handling
 chrono = "0.4"

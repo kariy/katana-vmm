@@ -1,9 +1,11 @@
 use crate::{
     instance::InstanceStatus,
-    qemu::{QemuConfig, VmManager},
+    qemu::{QemuConfig, QmpClient, VmManager},
     state::StateDatabase,
 };
 use anyhow::Result;
+use std::thread;
+use std::time::Duration;
 
 pub fn execute(name: &str, db: &StateDatabase, vm_manager: &VmManager) -> Result<()> {
     tracing::info!("Starting instance: {}", name);
@@ -86,19 +88,96 @@ pub fn execute(name: &str, db: &StateDatabase, vm_manager: &VmManager) -> Result
     // Launch VM
     let pid = vm_manager.launch_vm(&qemu_config)?;
 
-    // Update state
+    // Update state with PID
     state.vm_pid = Some(pid);
     state.update_status(InstanceStatus::Running);
     db.save_instance(&state)?;
 
+    println!("\n✓ QEMU process started (PID: {})", pid);
+    println!("  Waiting for VM to initialize...");
+
+    // Wait for QMP socket to be created
+    let qmp_socket = state.qmp_socket.clone().unwrap();
+    let max_wait = 30; // seconds
+    let mut waited = 0;
+
+    while !qmp_socket.exists() && waited < max_wait {
+        thread::sleep(Duration::from_millis(500));
+        waited += 1;
+
+        // Check if process is still alive
+        if !vm_manager.is_process_running(pid) {
+            anyhow::bail!("QEMU process died unexpectedly. Check logs at: {}",
+                state.serial_log.unwrap().display());
+        }
+    }
+
+    if !qmp_socket.exists() {
+        anyhow::bail!("QMP socket not created after {} seconds", max_wait);
+    }
+
+    // Connect to QMP and verify VM is running
+    print!("  Connecting to QMP...");
+    std::io::Write::flush(&mut std::io::stdout())?;
+
+    let mut qmp_client = QmpClient::new();
+    let mut connected = false;
+
+    for _ in 0..10 {
+        if let Ok(_) = qmp_client.connect(&qmp_socket) {
+            connected = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+
+    if !connected {
+        anyhow::bail!("Failed to connect to QMP socket");
+    }
+
+    // Query VM status
+    match qmp_client.query_status() {
+        Ok(status) => {
+            if status.running {
+                println!(" ✓");
+            } else {
+                println!(" VM not running (status: {})", status.status);
+            }
+        }
+        Err(e) => {
+            println!(" Warning: Could not query VM status: {}", e);
+        }
+    }
+
+    // Wait for katana HTTP endpoint to be responsive
+    print!("  Waiting for katana RPC...");
+    std::io::Write::flush(&mut std::io::stdout())?;
+
+    let rpc_url = format!("http://localhost:{}/", state.config.rpc_port);
+    let mut katana_ready = false;
+
+    for _ in 0..30 {
+        if let Ok(response) = ureq::get(&rpc_url).timeout(Duration::from_secs(1)).call() {
+            if response.status() == 200 {
+                katana_ready = true;
+                println!(" ✓");
+                break;
+            }
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+
+    if !katana_ready {
+        println!(" Timed out");
+        println!("\nWarning: Katana may still be initializing.");
+        println!("Check logs with: katana-hypervisor logs {}", name);
+    }
+
     println!("\n✓ Instance '{}' started successfully", name);
     println!("  PID: {}", pid);
     println!("  RPC Endpoint: http://localhost:{}", state.config.rpc_port);
+    println!("  Health Check: http://localhost:{}/", state.config.rpc_port);
     println!("  Serial Log: {}", state.serial_log.unwrap().display());
-    println!("\nWait a few seconds for katana to initialize, then test with:");
-    println!("  curl -X POST http://localhost:{} \\", state.config.rpc_port);
-    println!("    -H 'Content-Type: application/json' \\");
-    println!("    -d '{{\"jsonrpc\":\"2.0\",\"method\":\"starknet_chainId\",\"params\":[],\"id\":1}}'");
 
     Ok(())
 }
