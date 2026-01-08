@@ -104,51 +104,6 @@ enum Commands {
         #[arg(short = 'n', long, default_value = "100")]
         tail: usize,
     },
-
-    /// Calculate SEV-SNP launch measurement
-    Measure {
-        /// Kernel path (optional, uses katana build if not specified)
-        #[arg(long)]
-        kernel: Option<PathBuf>,
-
-        /// Initrd path (optional, uses katana build if not specified)
-        #[arg(long)]
-        initrd: Option<PathBuf>,
-
-        /// OVMF firmware path (optional, uses katana build if not specified)
-        #[arg(long)]
-        ovmf: Option<PathBuf>,
-
-        /// Kernel command line
-        #[arg(long)]
-        cmdline: Option<String>,
-
-        /// Number of vCPUs
-        #[arg(long, default_value = "4")]
-        vcpus: u32,
-
-        /// VCPU type for SEV-SNP
-        #[arg(long, default_value = "EPYC-v4")]
-        vcpu_type: String,
-
-        /// Katana repository path
-        #[arg(long, default_value = "/home/ubuntu/katana")]
-        katana_repo: PathBuf,
-
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Verify SEV-SNP attestation for a running instance
-    Attest {
-        /// Instance name
-        name: String,
-
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
 }
 
 fn main() -> Result<()> {
@@ -226,30 +181,6 @@ fn main() -> Result<()> {
         }
         Commands::Logs { name, follow, tail } => {
             katana_hypervisor::cli::logs::execute(&name, follow, tail, &db)?;
-        }
-        Commands::Measure {
-            kernel,
-            initrd,
-            ovmf,
-            cmdline,
-            vcpus,
-            vcpu_type,
-            katana_repo,
-            json,
-        } => {
-            katana_hypervisor::cli::measure::execute(
-                kernel,
-                initrd,
-                ovmf,
-                cmdline,
-                vcpus,
-                vcpu_type,
-                katana_repo,
-                json,
-            )?;
-        }
-        Commands::Attest { name, json } => {
-            katana_hypervisor::cli::attest::execute(&name, &db, json)?;
         }
     }
 
