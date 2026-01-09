@@ -1,77 +1,46 @@
 use crate::{qemu::QemuConfig, HypervisorError, Result};
-use std::fs;
-use std::process::{Command, Stdio};
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
+use std::fs;
+use std::process::{Command, Stdio};
 
 /// Represents a single QEMU VM instance with its configuration and state.
 ///
-/// This struct encapsulates all information about a VM and provides instance methods
-/// for lifecycle operations. Unlike `VmManager`, which is a stateless manager for VMs,
+/// Provides instance methods for lifecycle operations. Unlike `VmManager` (stateless),
 /// `Vm` maintains the state of a specific VM instance.
 ///
-/// # Lifecycle and Cleanup
+/// # Drop Behavior - IMPORTANT
 ///
-/// **IMPORTANT**: The `Vm` struct does NOT automatically stop the VM when dropped. QEMU
-/// processes run independently in daemon mode and will continue running even after the
-/// `Vm` instance is dropped or goes out of scope.
+/// **The `Vm` struct does NOT automatically stop the VM when dropped.**
 ///
-/// ## Recommended Cleanup Pattern
-///
-/// **Always explicitly stop the VM** before dropping:
-///
-/// ```no_run
-/// # use katana_core::qemu::{QemuConfig, Vm};
-/// # use std::path::PathBuf;
-/// # fn example(config: QemuConfig) -> katana_core::Result<()> {
-/// let mut vm = Vm::new(config);
-/// vm.launch()?;
-///
-/// // ... perform operations ...
-///
-/// // Explicitly stop before dropping (RECOMMENDED)
-/// vm.stop(10)?;  // Graceful shutdown with 10 second timeout
-/// # Ok(())
-/// # }
-/// ```
-///
-/// ## What Happens If You Forget to Stop
-///
-/// If a `Vm` instance is dropped while the VM is still running:
-/// - The QEMU process continues running in the background
-/// - The PID is lost (unless you tracked it separately)
-/// - You'll need to manually find and kill the process (e.g., via `ps` or PID file)
-/// - System resources remain allocated
+/// QEMU processes run independently in daemon mode and continue running after the
+/// `Vm` instance is dropped. **Always explicitly call `stop()` or `kill()`** before dropping.
 ///
 /// ```no_run
 /// # use katana_core::qemu::{QemuConfig, Vm};
 /// # fn example(config: QemuConfig) -> katana_core::Result<()> {
 /// let mut vm = Vm::new(config);
 /// vm.launch()?;
-///
-/// // BAD: Dropping without stopping
-/// drop(vm);  // VM still running in background as orphaned process!
+/// // ... operations ...
+/// vm.stop(10)?;  // Required! Otherwise VM orphaned
 /// # Ok(())
 /// # }
 /// ```
 ///
-/// ## Design Rationale
+/// ## Why No Auto-Stop?
 ///
-/// The `Drop` implementation intentionally does not stop the VM because:
-/// 1. **Explicit is better than implicit** - VM shutdown is a significant operation
-/// 2. **Daemon mode** - QEMU runs independently and may outlive the parent process
-/// 3. **Error handling** - Stopping a VM can fail and Drop cannot return Result
-/// 4. **Intent preservation** - You may want the VM to continue running after drop
+/// 1. Explicit is better than implicit for significant operations
+/// 2. QEMU runs in daemon mode independently
+/// 3. Drop cannot return `Result` for error handling
+/// 4. May want VM to continue running after drop
 ///
-/// ## Recovery from Lost Instances
+/// ## Recovery
 ///
-/// If you lose the `Vm` instance but need to stop the VM, you can:
+/// If you lose the `Vm` handle, reattach via PID:
 ///
 /// ```no_run
 /// # use katana_core::qemu::{QemuConfig, Vm};
-/// # use std::path::PathBuf;
 /// # fn example(config: QemuConfig) -> katana_core::Result<()> {
-/// // Reattach using PID from file or other source
 /// let pid_str = std::fs::read_to_string("/tmp/qemu.pid")?;
 /// let pid: i32 = pid_str.trim().parse()
 ///     .map_err(|e| katana_core::HypervisorError::QemuFailed(format!("Invalid PID: {}", e)))?;
@@ -81,68 +50,11 @@ use nix::unistd::Pid;
 /// # }
 /// ```
 ///
-/// # Examples
+/// # When to Use
 ///
-/// ## Basic Usage
-///
-/// ```no_run
-/// use katana_core::qemu::{QemuConfig, Vm};
-/// use std::path::PathBuf;
-///
-/// # fn example() -> katana_core::Result<()> {
-/// let config = QemuConfig {
-///     memory_mb: 2048,
-///     vcpus: 2,
-///     cpu_type: "host".to_string(),
-///     kernel_path: PathBuf::from("/path/to/kernel"),
-///     initrd_path: PathBuf::from("/path/to/initrd"),
-///     bios_path: None,
-///     kernel_cmdline: "console=ttyS0".to_string(),
-///     rpc_port: 5050,
-///     disk_image: None,
-///     qmp_socket: PathBuf::from("/tmp/qmp.sock"),
-///     serial_log: PathBuf::from("/tmp/serial.log"),
-///     pid_file: PathBuf::from("/tmp/qemu.pid"),
-///     sev_snp: None,
-///     enable_kvm: true,
-/// };
-///
-/// let mut vm = Vm::new(config);
-/// vm.launch()?;
-///
-/// // Perform operations
-/// vm.pause()?;
-/// vm.resume()?;
-///
-/// // Always clean up explicitly
-/// vm.stop(10)?;
-/// # Ok(())
-/// # }
-/// ```
-///
-/// ## Using RAII Pattern with Result
-///
-/// ```no_run
-/// # use katana_core::qemu::{QemuConfig, Vm};
-/// # fn example(config: QemuConfig) -> katana_core::Result<()> {
-/// fn run_vm(config: QemuConfig) -> katana_core::Result<()> {
-///     let mut vm = Vm::new(config);
-///     vm.launch()?;
-///
-///     // Do work...
-///
-///     // Cleanup happens here before function returns
-///     vm.stop(10)?;
-///     Ok(())
-/// }
-///
-/// // If run_vm returns Err, VM may still be running
-/// if let Err(e) = run_vm(config) {
-///     eprintln!("VM failed: {}. You may need to clean up manually.", e);
-/// }
-/// # Ok(())
-/// # }
-/// ```
+/// - ✅ Use for testing without database
+/// - ✅ Use for simple scripts
+/// - ❌ Don't use in production daemon (use `ManagedVm` instead)
 #[derive(Debug)]
 pub struct Vm {
     /// Configuration for this VM instance
@@ -153,31 +65,14 @@ pub struct Vm {
 }
 
 impl Vm {
-    /// Create a new VM instance with the given configuration.
-    ///
-    /// The VM is not launched automatically. Call `launch()` to start it.
-    ///
-    /// # Parameters
-    /// - `config`: QEMU configuration for this VM
+    /// Create a new VM instance. Not launched automatically.
     pub fn new(config: QemuConfig) -> Self {
-        Self {
-            config,
-            pid: None,
-        }
+        Self { config, pid: None }
     }
 
-    /// Create a VM instance from an already running QEMU process.
+    /// Attach to an already running QEMU process.
     ///
-    /// This is useful when you need to attach to a VM that was launched externally
-    /// or when recovering from a restart.
-    ///
-    /// # Parameters
-    /// - `config`: QEMU configuration for this VM
-    /// - `pid`: Process ID of the running QEMU process
-    ///
-    /// # Note
-    /// This does not verify that the process is actually running or that it matches
-    /// the configuration. Use `is_running()` to verify.
+    /// Does not verify process is running. Use `is_running()` to check.
     pub fn from_running(config: QemuConfig, pid: i32) -> Self {
         Self {
             config,
@@ -185,15 +80,7 @@ impl Vm {
         }
     }
 
-    /// Launch this VM with its configured settings.
-    ///
-    /// This spawns a QEMU process in daemon mode and waits for the PID file to be written.
-    /// After successful launch, the VM's PID is stored and can be retrieved via `pid()`.
-    ///
-    /// # Errors
-    /// - If QEMU launch fails
-    /// - If PID file cannot be read
-    /// - If the VM is already running
+    /// Launch the VM. Spawns QEMU in daemon mode and stores PID.
     pub fn launch(&mut self) -> Result<()> {
         if self.pid.is_some() {
             return Err(HypervisorError::QemuFailed(
@@ -235,17 +122,7 @@ impl Vm {
         Ok(())
     }
 
-    /// Stop this VM gracefully via SIGTERM.
-    ///
-    /// Sends SIGTERM to the QEMU process and waits up to `timeout_secs` for it to exit.
-    /// If the VM doesn't stop within the timeout, it will be force-killed with SIGKILL.
-    ///
-    /// # Parameters
-    /// - `timeout_secs`: Maximum seconds to wait for graceful shutdown
-    ///
-    /// # Errors
-    /// - If the VM is not running
-    /// - If signal sending fails
+    /// Stop VM gracefully via SIGTERM. Force kills with SIGKILL after timeout.
     pub fn stop(&mut self, timeout_secs: u64) -> Result<()> {
         let pid = self.require_pid()?;
 
@@ -273,17 +150,9 @@ impl Vm {
         Ok(())
     }
 
-    /// Force kill this VM with SIGKILL.
+    /// Force kill VM with SIGKILL (immediate termination).
     ///
-    /// This immediately terminates the QEMU process without graceful shutdown.
-    /// Use `stop()` for graceful shutdown instead.
-    ///
-    /// # Warning
-    /// This may cause data loss or corruption in the guest OS.
-    ///
-    /// # Errors
-    /// - If the VM is not running
-    /// - If signal sending fails
+    /// **Warning**: May cause data loss. Use `stop()` for graceful shutdown.
     pub fn kill(&mut self) -> Result<()> {
         let pid = self.require_pid()?;
 
@@ -300,13 +169,7 @@ impl Vm {
         Ok(())
     }
 
-    /// Check if this VM is currently running.
-    ///
-    /// Uses signal 0 to check if the process exists without actually sending a signal.
-    ///
-    /// # Returns
-    /// - `true` if the VM process is running
-    /// - `false` if the VM was never launched or has stopped
+    /// Check if VM process is currently running.
     pub fn is_running(&self) -> bool {
         match self.pid {
             Some(pid) => kill(Pid::from_raw(pid), None).is_ok(),
@@ -314,18 +177,7 @@ impl Vm {
         }
     }
 
-    /// Pause VM execution (freeze vCPUs).
-    ///
-    /// Connects to the VM's QMP socket and sends a stop command to freeze vCPU execution.
-    /// Memory and device state are preserved. The guest OS is unaware of the pause.
-    ///
-    /// For detailed information about resource effects, behavior, and use cases,
-    /// see [`QmpClient::stop()`](crate::qemu::QmpClient::stop).
-    ///
-    /// # Errors
-    /// - If the VM is not running
-    /// - If QMP socket connection fails
-    /// - If QMP command fails
+    /// Pause VM execution (freeze vCPUs via QMP).
     pub fn pause(&self) -> Result<()> {
         self.require_pid()?;
 
@@ -339,18 +191,7 @@ impl Vm {
         Ok(())
     }
 
-    /// Resume VM execution (unfreeze vCPUs).
-    ///
-    /// Connects to the VM's QMP socket and sends a continue command to resume vCPU execution.
-    /// This restores execution after a pause.
-    ///
-    /// For detailed information about resource effects, behavior, and use cases,
-    /// see [`QmpClient::cont()`](crate::qemu::QmpClient::cont).
-    ///
-    /// # Errors
-    /// - If the VM is not running
-    /// - If QMP socket connection fails
-    /// - If QMP command fails
+    /// Resume VM execution (unfreeze vCPUs via QMP).
     pub fn resume(&self) -> Result<()> {
         self.require_pid()?;
 
@@ -364,18 +205,7 @@ impl Vm {
         Ok(())
     }
 
-    /// Suspend VM to RAM (ACPI S3 sleep).
-    ///
-    /// Connects to the VM's QMP socket and triggers an ACPI S3 suspend. This is a
-    /// guest-cooperative operation where the guest OS participates in the suspend sequence.
-    ///
-    /// For detailed information about ACPI requirements, resource effects, and use cases,
-    /// see [`QmpClient::system_suspend()`](crate::qemu::QmpClient::system_suspend).
-    ///
-    /// # Errors
-    /// - If the VM is not running
-    /// - If QMP socket connection fails
-    /// - If QMP command fails (especially if guest lacks ACPI support)
+    /// Suspend VM to RAM (ACPI S3 via QMP). Requires guest OS cooperation.
     pub fn suspend(&self) -> Result<()> {
         self.require_pid()?;
 
@@ -389,18 +219,7 @@ impl Vm {
         Ok(())
     }
 
-    /// Wake VM from suspend (ACPI wakeup).
-    ///
-    /// Connects to the VM's QMP socket and triggers an ACPI wakeup event. This brings
-    /// a suspended VM back to running state through the guest's ACPI resume handlers.
-    ///
-    /// For detailed information about ACPI requirements, resource effects, and use cases,
-    /// see [`QmpClient::system_wakeup()`](crate::qemu::QmpClient::system_wakeup).
-    ///
-    /// # Errors
-    /// - If the VM is not running
-    /// - If QMP socket connection fails
-    /// - If QMP command fails (especially if VM is not in suspended state)
+    /// Wake VM from suspend (ACPI wakeup via QMP).
     pub fn wake(&self) -> Result<()> {
         self.require_pid()?;
 
@@ -414,21 +233,9 @@ impl Vm {
         Ok(())
     }
 
-    /// Reset VM (hard reboot).
+    /// Reset VM (hard reboot via QMP).
     ///
-    /// Connects to the VM's QMP socket and triggers a hard reset without graceful shutdown.
-    /// This is equivalent to pressing a physical reset button.
-    ///
-    /// For detailed information about risks, resource effects, and use cases,
-    /// see [`QmpClient::system_reset()`](crate::qemu::QmpClient::system_reset).
-    ///
-    /// # Warning
-    /// This is a hard reset without graceful shutdown. May cause data loss or corruption.
-    ///
-    /// # Errors
-    /// - If the VM is not running
-    /// - If QMP socket connection fails
-    /// - If QMP command fails
+    /// **Warning**: Hard reset without graceful shutdown. May cause data loss.
     pub fn reset(&self) -> Result<()> {
         self.require_pid()?;
 
@@ -442,11 +249,7 @@ impl Vm {
         Ok(())
     }
 
-    /// Get the process ID of this VM.
-    ///
-    /// # Returns
-    /// - `Some(pid)` if the VM has been launched
-    /// - `None` if the VM has not been launched or has been stopped
+    /// Get the process ID (None if not launched or stopped).
     pub fn pid(&self) -> Option<i32> {
         self.pid
     }
@@ -473,9 +276,8 @@ impl Vm {
 
     /// Helper to require a PID, returning an error if not launched.
     fn require_pid(&self) -> Result<i32> {
-        self.pid.ok_or_else(|| {
-            HypervisorError::QemuFailed("VM is not running".to_string())
-        })
+        self.pid
+            .ok_or_else(|| HypervisorError::QemuFailed("VM is not running".to_string()))
     }
 
     /// Read PID from the VM's PID file.
