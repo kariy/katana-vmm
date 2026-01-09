@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 /// Provides instance methods for lifecycle operations. Unlike `VmManager` (stateless),
 /// `Vm` maintains the state of a specific VM instance.
 ///
-/// # Drop Behavior - IMPORTANT
+/// # Drop Behavior
 ///
 /// **The `Vm` struct does NOT automatically stop the VM when dropped.**
 ///
@@ -26,35 +26,6 @@ use std::process::{Command, Stdio};
 /// # Ok(())
 /// # }
 /// ```
-///
-/// ## Why No Auto-Stop?
-///
-/// 1. Explicit is better than implicit for significant operations
-/// 2. QEMU runs in daemon mode independently
-/// 3. Drop cannot return `Result` for error handling
-/// 4. May want VM to continue running after drop
-///
-/// ## Recovery
-///
-/// If you lose the `Vm` handle, reattach via PID:
-///
-/// ```no_run
-/// # use katana_core::qemu::{QemuConfig, Vm};
-/// # fn example(config: QemuConfig) -> katana_core::Result<()> {
-/// let pid_str = std::fs::read_to_string("/tmp/qemu.pid")?;
-/// let pid: i32 = pid_str.trim().parse()
-///     .map_err(|e| katana_core::HypervisorError::QemuFailed(format!("Invalid PID: {}", e)))?;
-/// let mut vm = Vm::from_running(config, pid);
-/// vm.stop(10)?;
-/// # Ok(())
-/// # }
-/// ```
-///
-/// # When to Use
-///
-/// - ✅ Use for testing without database
-/// - ✅ Use for simple scripts
-/// - ❌ Don't use in production daemon (use `ManagedVm` instead)
 #[derive(Debug)]
 pub struct Vm {
     /// Configuration for this VM instance
@@ -70,14 +41,57 @@ impl Vm {
         Self { config, pid: None }
     }
 
-    /// Attach to an already running QEMU process.
+    /// Attach to an already running QEMU process by PID.
     ///
-    /// Does not verify process is running. Use `is_running()` to check.
-    pub fn from_running(config: QemuConfig, pid: i32) -> Self {
-        Self {
-            config,
-            pid: Some(pid),
+    /// Verifies that:
+    /// 1. The PID exists and is accessible
+    /// 2. The process is a QEMU instance
+    /// 3. The QMP socket path matches this VM's configuration
+    /// 4. The QMP socket is responsive
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use katana_core::qemu::{QemuConfig, Vm};
+    /// # fn example(config: QemuConfig) -> katana_core::Result<()> {
+    /// let pid_str = std::fs::read_to_string("/tmp/qemu.pid")?;
+    /// let pid: i32 = pid_str.trim().parse()
+    ///     .map_err(|e| katana_core::HypervisorError::QemuFailed(format!("Invalid PID: {}", e)))?;
+    ///
+    /// let mut vm = Vm::new(config);
+    /// vm.attach(pid)?;  // Verifies it's the right QEMU instance
+    /// vm.stop(10)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns error if:
+    /// - VM is already launched or attached
+    /// - PID doesn't exist or isn't accessible
+    /// - PID is not a QEMU process
+    /// - QMP socket doesn't match config (wrong VM instance)
+    /// - QMP socket is not responsive
+    pub fn attach(&mut self, pid: i32) -> Result<()> {
+        if self.pid.is_some() {
+            return Err(HypervisorError::QemuFailed(
+                "VM is already running or attached".to_string(),
+            ));
         }
+
+        tracing::info!("Attaching to QEMU process with PID: {}", pid);
+
+        // Verify it's the expected QEMU instance
+        self.verify_qemu_process(pid)?;
+
+        // Verify QMP connectivity
+        self.verify_qmp_connectivity()?;
+
+        self.pid = Some(pid);
+
+        tracing::info!("Successfully attached to VM with PID: {}", pid);
+        Ok(())
     }
 
     /// Launch the VM. Spawns QEMU in daemon mode and stores PID.
@@ -298,6 +312,73 @@ impl Vm {
 
         Ok(pid)
     }
+
+    /// Verify that a PID belongs to the expected QEMU instance.
+    ///
+    /// Checks:
+    /// 1. Process exists
+    /// 2. Process is a QEMU process
+    /// 3. QMP socket path matches config
+    fn verify_qemu_process(&self, pid: i32) -> Result<()> {
+        // Check process exists
+        kill(Pid::from_raw(pid), None).map_err(|_| {
+            HypervisorError::QemuFailed(format!("Process {} not found or not accessible", pid))
+        })?;
+
+        // Read command line from /proc
+        let cmdline_path = format!("/proc/{}/cmdline", pid);
+        let cmdline = fs::read_to_string(&cmdline_path).map_err(|e| {
+            HypervisorError::QemuFailed(format!("Failed to read {}: {}", cmdline_path, e))
+        })?;
+
+        // Parse cmdline (args are null-separated)
+        let args: Vec<&str> = cmdline.split('\0').filter(|s| !s.is_empty()).collect();
+
+        if args.is_empty() {
+            return Err(HypervisorError::QemuFailed(
+                "Failed to parse process command line".to_string(),
+            ));
+        }
+
+        // Check it's a QEMU process
+        let exe = args[0];
+        if !exe.contains("qemu-system") {
+            return Err(HypervisorError::QemuFailed(format!(
+                "PID {} is not a QEMU process (executable: {})",
+                pid, exe
+            )));
+        }
+
+        // Verify QMP socket matches (most reliable unique identifier)
+        let qmp_socket_str = self.config.qmp_socket.to_string_lossy();
+        let qmp_pattern = format!("unix:{}", qmp_socket_str);
+
+        let cmdline_str = args.join(" ");
+        if !cmdline_str.contains(&qmp_pattern) {
+            return Err(HypervisorError::QemuFailed(format!(
+                "PID {} does not match expected QMP socket: {}",
+                pid, qmp_socket_str
+            )));
+        }
+
+        tracing::debug!("Verified PID {} is the expected QEMU instance", pid);
+        Ok(())
+    }
+
+    /// Verify QMP socket connectivity to the VM.
+    fn verify_qmp_connectivity(&self) -> Result<()> {
+        let mut qmp_client = crate::qemu::QmpClient::new();
+        qmp_client.connect(&self.config.qmp_socket).map_err(|e| {
+            HypervisorError::QemuFailed(format!(
+                "Failed to connect to QMP socket {}: {}",
+                self.config.qmp_socket.display(),
+                e
+            ))
+        })?;
+
+        tracing::debug!("QMP socket connectivity verified");
+        Ok(())
+    }
 }
 
 impl Drop for Vm {
@@ -353,11 +434,28 @@ mod tests {
     }
 
     #[test]
-    fn test_from_running() {
+    fn test_attach_fails_without_process() {
         let config = create_test_config();
-        let vm = Vm::from_running(config, 12345);
+        let mut vm = Vm::new(config);
 
-        assert_eq!(vm.pid(), Some(12345));
+        // Attaching to a non-existent PID should fail
+        let result = vm.attach(99999);
+        assert!(result.is_err());
+        assert!(vm.pid().is_none());
+    }
+
+    #[test]
+    fn test_attach_fails_when_already_running() {
+        let config = create_test_config();
+        let mut vm = Vm::new(config);
+
+        // Manually set PID to simulate already running
+        vm.pid = Some(12345);
+
+        // Trying to attach when already running should fail
+        let result = vm.attach(67890);
+        assert!(result.is_err());
+        assert_eq!(vm.pid(), Some(12345)); // PID unchanged
     }
 
     #[test]

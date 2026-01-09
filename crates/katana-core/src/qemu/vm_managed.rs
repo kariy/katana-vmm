@@ -20,13 +20,6 @@ use crate::{
 /// - **Reset**: Stays `Running` (VM reboots)
 /// - **Stop**: `Current` -> `Stopping` -> `Stopped` (PID cleared)
 /// - **Kill**: `Current` -> `Stopped` (immediate, PID cleared)
-///
-/// # When to Use
-///
-/// - ✅ Use in daemon/API code with database
-/// - ✅ Use when state persistence is required
-/// - ❌ Don't use in unit tests (use raw `Vm`)
-/// - ❌ Don't use for one-off scripts without database
 pub struct ManagedVm {
     /// The underlying QEMU VM instance
     vm: Vm,
@@ -53,15 +46,21 @@ impl ManagedVm {
     /// Load an existing managed VM from the database.
     ///
     /// Reconstructs a `ManagedVm` from database state, reattaching to a running VM if it has a PID.
+    ///
+    /// # Errors
+    ///
+    /// - If the instance is not found in the database
+    /// - If the PID in the database is invalid or not the expected QEMU instance
     pub fn from_instance(instance_id: &str, db: &StateDatabase) -> Result<Self> {
         let state = db.get_instance_by_id(instance_id)?;
         let config = instance_state_to_qemu_config(&state)?;
 
-        let vm = if let Some(pid) = state.vm_pid {
-            Vm::from_running(config, pid)
-        } else {
-            Vm::new(config)
-        };
+        let mut vm = Vm::new(config);
+
+        // If the instance has a PID, attempt to attach to the running process
+        if let Some(pid) = state.vm_pid {
+            vm.attach(pid)?;
+        }
 
         Ok(Self {
             vm,
@@ -88,7 +87,10 @@ impl ManagedVm {
                 state.vm_pid = self.vm.pid();
                 self.db.save_instance(&state)?;
 
-                tracing::info!("ManagedVm: Instance {} launched successfully", self.instance_id);
+                tracing::info!(
+                    "ManagedVm: Instance {} launched successfully",
+                    self.instance_id
+                );
                 Ok(())
             }
             Err(e) => {
@@ -110,7 +112,10 @@ impl ManagedVm {
         match self.vm.pause() {
             Ok(()) => {
                 self.update_status(InstanceStatus::Paused)?;
-                tracing::info!("ManagedVm: Instance {} paused successfully", self.instance_id);
+                tracing::info!(
+                    "ManagedVm: Instance {} paused successfully",
+                    self.instance_id
+                );
                 Ok(())
             }
             Err(e) => {
@@ -131,7 +136,10 @@ impl ManagedVm {
         match self.vm.resume() {
             Ok(()) => {
                 self.update_status(InstanceStatus::Running)?;
-                tracing::info!("ManagedVm: Instance {} resumed successfully", self.instance_id);
+                tracing::info!(
+                    "ManagedVm: Instance {} resumed successfully",
+                    self.instance_id
+                );
                 Ok(())
             }
             Err(e) => {
@@ -152,7 +160,10 @@ impl ManagedVm {
         match self.vm.suspend() {
             Ok(()) => {
                 self.update_status(InstanceStatus::Suspended)?;
-                tracing::info!("ManagedVm: Instance {} suspended successfully", self.instance_id);
+                tracing::info!(
+                    "ManagedVm: Instance {} suspended successfully",
+                    self.instance_id
+                );
                 Ok(())
             }
             Err(e) => {
@@ -171,7 +182,10 @@ impl ManagedVm {
         match self.vm.wake() {
             Ok(()) => {
                 self.update_status(InstanceStatus::Running)?;
-                tracing::info!("ManagedVm: Instance {} woken successfully", self.instance_id);
+                tracing::info!(
+                    "ManagedVm: Instance {} woken successfully",
+                    self.instance_id
+                );
                 Ok(())
             }
             Err(e) => {
@@ -191,7 +205,10 @@ impl ManagedVm {
             Ok(()) => {
                 // VM is still running after reset
                 self.update_status(InstanceStatus::Running)?;
-                tracing::info!("ManagedVm: Instance {} reset successfully", self.instance_id);
+                tracing::info!(
+                    "ManagedVm: Instance {} reset successfully",
+                    self.instance_id
+                );
                 Ok(())
             }
             Err(e) => {
@@ -217,7 +234,10 @@ impl ManagedVm {
                 state.vm_pid = None;
                 self.db.save_instance(&state)?;
 
-                tracing::info!("ManagedVm: Instance {} stopped successfully", self.instance_id);
+                tracing::info!(
+                    "ManagedVm: Instance {} stopped successfully",
+                    self.instance_id
+                );
                 Ok(())
             }
             Err(e) => {
@@ -249,7 +269,10 @@ impl ManagedVm {
                 state.vm_pid = None;
                 self.db.save_instance(&state)?;
 
-                tracing::info!("ManagedVm: Instance {} killed successfully", self.instance_id);
+                tracing::info!(
+                    "ManagedVm: Instance {} killed successfully",
+                    self.instance_id
+                );
                 Ok(())
             }
             Err(e) => {
@@ -339,8 +362,8 @@ fn instance_state_to_qemu_config(state: &InstanceState) -> Result<QemuConfig> {
     // Build SEV-SNP config if in TEE mode
     let sev_snp = if config.tee_mode {
         Some(crate::qemu::config::SevSnpConfig {
-            cbitpos: 51,           // Standard for AMD SEV
-            reduced_phys_bits: 1,   // Standard for AMD SEV
+            cbitpos: 51,          // Standard for AMD SEV
+            reduced_phys_bits: 1, // Standard for AMD SEV
             vcpu_type: config.vcpu_type.clone(),
         })
     } else {
