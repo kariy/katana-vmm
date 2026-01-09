@@ -7,6 +7,7 @@ pub struct InstanceConfig {
     pub vcpus: u32,
     pub memory_mb: u64,
     pub storage_bytes: u64,
+    pub quota_project_id: Option<u32>,
 
     // Network
     pub rpc_port: u16,
@@ -24,6 +25,7 @@ pub struct InstanceConfig {
 
     // Storage
     pub data_dir: PathBuf,
+    pub disk_image: Option<PathBuf>,
 
     // Katana-specific configuration
     pub chain_id: Option<String>,
@@ -40,6 +42,7 @@ impl Default for InstanceConfig {
             vcpus: 4,
             memory_mb: 4096,
             storage_bytes: 10 * 1024 * 1024 * 1024, // 10GB
+            quota_project_id: None,
             rpc_port: 5050,
             metrics_port: None,
             tee_mode: false,
@@ -49,6 +52,7 @@ impl Default for InstanceConfig {
             initrd_path: PathBuf::new(),
             ovmf_path: None,
             data_dir: PathBuf::new(),
+            disk_image: None,
             chain_id: None,
             dev_mode: false,
             block_time: None,

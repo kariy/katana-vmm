@@ -1,9 +1,11 @@
 // Instance management module
 pub mod config;
+pub mod quota;
 pub mod state;
 pub mod storage;
 
 pub use config::InstanceConfig;
+pub use quota::QuotaManager;
 pub use state::{InstanceState, InstanceStatus};
 pub use storage::StorageManager;
 

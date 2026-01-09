@@ -18,6 +18,9 @@ pub struct QemuConfig {
     // Network
     pub rpc_port: u16,
 
+    // Storage
+    pub disk_image: Option<PathBuf>,
+
     // Paths
     pub qmp_socket: PathBuf,
     pub serial_log: PathBuf,
@@ -104,6 +107,15 @@ impl QemuConfig {
 
         args.push("-device".to_string());
         args.push("virtio-net-pci,netdev=net0".to_string());
+
+        // Storage - virtio-blk disk image
+        if let Some(ref disk_path) = self.disk_image {
+            args.push("-drive".to_string());
+            args.push(format!(
+                "file={},if=virtio,format=qcow2",
+                disk_path.to_string_lossy()
+            ));
+        }
 
         // No graphics (use -display none instead of -nographic for compatibility with -daemonize)
         args.push("-display".to_string());

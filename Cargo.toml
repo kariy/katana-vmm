@@ -9,7 +9,8 @@ clap = { version = "4.5", features = ["derive", "env"] }
 
 # QEMU/VM management
 qmp = "0.1"
-nix = { version = "0.29", features = ["process", "signal"] }
+nix = { version = "0.29", features = ["process", "signal", "quota", "fs", "ioctl"] }
+libc = "0.2"
 
 # State persistence
 rusqlite = { version = "0.32", features = ["bundled"] }

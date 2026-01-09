@@ -1,5 +1,5 @@
 use crate::{
-    instance::{BootComponents, InstanceConfig, InstanceState, StorageManager},
+    instance::{BootComponents, InstanceConfig, InstanceState, QuotaManager, StorageManager},
     port::PortAllocator,
     qemu::VmManager,
     state::StateDatabase,
@@ -75,6 +75,7 @@ pub fn execute(
         vcpus,
         memory_mb,
         storage_bytes,
+        quota_project_id: Some(QuotaManager::derive_project_id(&instance_id)),
         rpc_port,
         metrics_port: None,
         tee_mode: tee,
@@ -87,7 +88,8 @@ pub fn execute(
         kernel_path: boot_components.kernel_path.clone(),
         initrd_path: boot_components.initrd_path.clone(),
         ovmf_path: Some(boot_components.ovmf_path.clone()),
-        data_dir: paths.data_dir.clone(),
+        data_dir: paths.disk_image.parent().unwrap().to_path_buf(), // Keep for backwards compat
+        disk_image: Some(paths.disk_image.clone()),
         chain_id: None,
         dev_mode: dev,
         block_time: None,

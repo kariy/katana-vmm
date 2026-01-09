@@ -964,6 +964,7 @@ dependencies = [
  "directories",
  "dirs",
  "hex",
+ "libc",
  "nix",
  "port_scanner",
  "qmp",

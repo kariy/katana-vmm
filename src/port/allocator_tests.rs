@@ -18,6 +18,7 @@ mod tests {
             vcpus: 4,
             memory_mb: 4096,
             storage_bytes: 10 * 1024 * 1024 * 1024,
+            quota_project_id: None,
             rpc_port: 5050,
             metrics_port: None,
             tee_mode: false,

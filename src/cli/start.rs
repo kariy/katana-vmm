@@ -65,6 +65,7 @@ pub fn execute(name: &str, db: &StateDatabase, vm_manager: &VmManager) -> Result
         bios_path: state.config.ovmf_path.clone(),
         kernel_cmdline,
         rpc_port: state.config.rpc_port,
+        disk_image: state.config.disk_image.clone(),
         qmp_socket: state.qmp_socket.clone().unwrap(),
         serial_log: state.serial_log.clone().unwrap(),
         pid_file: std::path::PathBuf::from(format!(

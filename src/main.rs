@@ -114,6 +114,49 @@ enum Commands {
         #[arg(long, default_value = "2")]
         interval: u64,
     },
+
+    /// Backup instance data to a directory
+    Backup {
+        /// Instance name
+        name: String,
+
+        /// Output directory for backup
+        output_dir: PathBuf,
+    },
+
+    /// Export instance disk image
+    Export {
+        /// Instance name
+        name: String,
+
+        /// Output path for disk image (qcow2 format)
+        output_path: PathBuf,
+    },
+
+    /// Restore instance from backup
+    Restore {
+        /// Backup directory
+        backup_dir: PathBuf,
+
+        /// New instance name
+        name: String,
+
+        /// Number of virtual CPUs (defaults to original)
+        #[arg(long)]
+        vcpus: Option<u32>,
+
+        /// Memory limit (defaults to original)
+        #[arg(long)]
+        memory: Option<String>,
+
+        /// Storage quota (defaults to original)
+        #[arg(long)]
+        storage: Option<String>,
+
+        /// RPC port (auto-assign if not specified)
+        #[arg(long)]
+        port: Option<u16>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -192,6 +235,32 @@ fn main() -> Result<()> {
         }
         Commands::Stats { name, watch, interval } => {
             katana_hypervisor::cli::stats::execute(&name, watch, interval, &db, &vm_manager)?;
+        }
+        Commands::Backup { name, output_dir } => {
+            katana_hypervisor::cli::backup::execute(&name, output_dir, &db, &storage)?;
+        }
+        Commands::Export { name, output_path } => {
+            katana_hypervisor::cli::export::execute(&name, output_path, &db, &storage)?;
+        }
+        Commands::Restore {
+            backup_dir,
+            name,
+            vcpus,
+            memory,
+            storage: storage_opt,
+            port,
+        } => {
+            katana_hypervisor::cli::restore::execute(
+                backup_dir,
+                &name,
+                vcpus,
+                memory.as_deref(),
+                storage_opt.as_deref(),
+                port,
+                &db,
+                &storage,
+                &port_allocator,
+            )?;
         }
     }
 

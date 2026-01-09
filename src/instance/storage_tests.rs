@@ -11,7 +11,7 @@ mod tests {
 
     #[test]
     fn test_create_instance_storage() {
-        let (storage, _temp) = create_test_storage();
+        let (mut storage, _temp) = create_test_storage();
 
         let instance_dir = storage
             .create_instance_storage("test-instance-1", 10_000_000_000)
@@ -44,7 +44,7 @@ mod tests {
 
     #[test]
     fn test_get_disk_usage_empty_dir() {
-        let (storage, _temp) = create_test_storage();
+        let (mut storage, _temp) = create_test_storage();
 
         storage
             .create_instance_storage("test-instance-1", 10_000_000_000)
@@ -56,7 +56,7 @@ mod tests {
 
     #[test]
     fn test_get_disk_usage_with_files() {
-        let (storage, _temp) = create_test_storage();
+        let (mut storage, _temp) = create_test_storage();
 
         let instance_dir = storage
             .create_instance_storage("test-instance-1", 10_000_000_000)
@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn test_check_quota_under_limit() {
-        let (storage, _temp) = create_test_storage();
+        let (mut storage, _temp) = create_test_storage();
 
         let instance_dir = storage
             .create_instance_storage("test-instance-1", 1000)
@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn test_check_quota_exceeded() {
-        let (storage, _temp) = create_test_storage();
+        let (mut storage, _temp) = create_test_storage();
 
         let instance_dir = storage
             .create_instance_storage("test-instance-1", 100)
@@ -109,7 +109,7 @@ mod tests {
 
     #[test]
     fn test_delete_instance_storage() {
-        let (storage, _temp) = create_test_storage();
+        let (mut storage, _temp) = create_test_storage();
 
         let instance_dir = storage
             .create_instance_storage("test-instance-1", 10_000_000_000)
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn test_multiple_instances_isolation() {
-        let (storage, _temp) = create_test_storage();
+        let (mut storage, _temp) = create_test_storage();
 
         // Create multiple instances
         let dir1 = storage

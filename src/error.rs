@@ -41,6 +41,15 @@ pub enum HypervisorError {
     #[error("Storage quota exceeded: {used}/{limit} bytes")]
     StorageQuotaExceeded { used: u64, limit: u64 },
 
+    #[error("Quota operation failed: {0}")]
+    QuotaOperationFailed(String),
+
+    #[error("Filesystem does not support quotas: {0}")]
+    QuotaNotSupported(String),
+
+    #[error("Insufficient permissions for quota operations: {0}")]
+    QuotaPermissionDenied(String),
+
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
 
