@@ -1,13 +1,9 @@
 use anyhow::Result;
 
 use crate::{config::OutputFormat, format};
-use katana_client::KatanaClient;
+use katana_client::Client;
 
-pub async fn execute(
-    client: &Client,
-    name: String,
-    output_format: &OutputFormat,
-) -> Result<()> {
+pub async fn execute(client: &Client, name: String, output_format: &OutputFormat) -> Result<()> {
     // Fetch stats from daemon
     let response = client.get_stats(&name).await?;
 

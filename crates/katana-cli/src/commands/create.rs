@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::{config::OutputFormat, format, models::ToJsonValue};
+use crate::{config::OutputFormat, format};
 use katana_client::Client;
 use katana_models::CreateInstanceRequest;
 
@@ -35,11 +35,11 @@ pub async fn execute(
 
     match output_format {
         OutputFormat::Json => {
-            let json_value = response.to_json_value();
+            let json_value = serde_json::to_value(&response)?;
             format::print_json(&json_value);
         }
         OutputFormat::Table => {
-            format::print_instance_details(&response.to_json_value());
+            format::print_instance_details(&response);
             println!("\n✓ Instance created successfully!");
         }
     }

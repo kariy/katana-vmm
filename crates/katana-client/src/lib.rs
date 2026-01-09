@@ -14,6 +14,7 @@ use katana_models::{
     StatsResponse,
 };
 
+#[derive(Debug)]
 pub struct Client {
     socket_path: PathBuf,
 }

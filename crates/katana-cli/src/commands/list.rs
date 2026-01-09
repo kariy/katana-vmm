@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::{config::OutputFormat, format, models::ToJsonValue};
+use crate::{config::OutputFormat, format};
 use katana_client::Client;
 
 pub async fn execute(client: &Client, output_format: &OutputFormat) -> Result<()> {
@@ -12,12 +12,7 @@ pub async fn execute(client: &Client, output_format: &OutputFormat) -> Result<()
             format::print_json(&json_value);
         }
         OutputFormat::Table => {
-            let instances: Vec<_> = response
-                .instances
-                .iter()
-                .map(|i| i.to_json_value())
-                .collect();
-            format::print_instance_list(&instances);
+            format::print_instance_list(&response.instances);
         }
     }
 

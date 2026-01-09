@@ -1,6 +1,5 @@
 use axum::{
     extract::{Extension, Path},
-    http::StatusCode,
     response::Json,
 };
 use katana_core::{

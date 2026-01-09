@@ -4,17 +4,16 @@ use axum::{
     response::Json,
 };
 use byte_unit::Byte;
-use katana_core::{
-    instance::{BootComponents, InstanceConfig, InstanceState},
-    state::StateDatabase,
-};
+use katana_core::instance::{BootComponents, InstanceConfig, InstanceState};
 use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
 
 use crate::{
     error::{ApiError, ApiResult},
-    models::{instance_state_to_response, CreateInstanceRequest, InstanceResponse, ListInstancesResponse},
+    models::{
+        instance_state_to_response, CreateInstanceRequest, InstanceResponse, ListInstancesResponse,
+    },
     state::DaemonState,
 };
 
@@ -57,7 +56,10 @@ pub async fn create_instance(
     // Allocate port
     let rpc_port = if let Some(port) = req.port {
         if !state.port_allocator.is_port_available(port)? {
-            return Err(ApiError::Conflict(format!("Port {} is not available", port)));
+            return Err(ApiError::Conflict(format!(
+                "Port {} is not available",
+                port
+            )));
         }
         port
     } else {
@@ -121,7 +123,10 @@ pub async fn create_instance(
 
     info!(id = %instance_id, name = %req.name, "Instance created successfully");
 
-    Ok((StatusCode::CREATED, Json(instance_state_to_response(instance_state))))
+    Ok((
+        StatusCode::CREATED,
+        Json(instance_state_to_response(instance_state)),
+    ))
 }
 
 /// List all instances
@@ -135,7 +140,10 @@ pub async fn list_instances(
     let total = instances.len();
 
     let response = ListInstancesResponse {
-        instances: instances.into_iter().map(instance_state_to_response).collect(),
+        instances: instances
+            .into_iter()
+            .map(instance_state_to_response)
+            .collect(),
         total,
     };
 

@@ -4,7 +4,6 @@ use clap::{Parser, Subcommand};
 mod commands;
 mod config;
 mod format;
-mod models;
 
 use config::CliConfig;
 use katana_client::Client;

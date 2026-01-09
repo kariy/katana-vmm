@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
 use axum::{
     extract::Extension,
-    http::StatusCode,
-    response::{IntoResponse, Json, Response},
-    routing::{delete, get, post},
+    response::{IntoResponse, Json},
+    routing::{get, post},
     Router,
 };
 use hyper::body::Incoming;
@@ -104,7 +103,10 @@ fn build_router(state: Arc<DaemonState>) -> Router {
 fn api_routes() -> Router {
     Router::new()
         // Instance CRUD
-        .route("/instances", get(api::list_instances).post(api::create_instance))
+        .route(
+            "/instances",
+            get(api::list_instances).post(api::create_instance),
+        )
         .route(
             "/instances/:name",
             get(api::get_instance).delete(api::delete_instance),
