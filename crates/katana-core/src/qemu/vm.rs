@@ -106,4 +106,160 @@ impl VmManager {
 
         Ok(pid)
     }
+
+    /// Pause VM execution by connecting to QMP and issuing a stop command.
+    ///
+    /// High-level wrapper that handles QMP connection and invokes the underlying
+    /// pause operation. This provides a simplified interface for pausing VMs.
+    ///
+    /// # Parameters
+    /// - `qmp_socket`: Path to the VM's QEMU Machine Protocol Unix socket
+    ///
+    /// # Operation
+    /// 1. Establishes QMP client connection to the socket
+    /// 2. Calls [`QmpClient::stop()`](crate::qemu::QmpClient::stop) to freeze vCPU execution
+    /// 3. Returns after pause command is acknowledged
+    ///
+    /// For detailed information about resource effects, behavior, and use cases,
+    /// see [`QmpClient::stop()`](crate::qemu::QmpClient::stop).
+    ///
+    /// # Errors
+    /// - QMP socket connection failures
+    /// - Underlying QMP command errors
+    pub fn pause_vm(&self, qmp_socket: &std::path::Path) -> Result<()> {
+        tracing::info!("Pausing VM via QMP");
+
+        let mut qmp_client = crate::qemu::QmpClient::new();
+        qmp_client.connect(qmp_socket)?;
+        qmp_client.stop()?;
+
+        tracing::info!("VM paused successfully");
+        Ok(())
+    }
+
+    /// Resume VM execution by connecting to QMP and issuing a continue command.
+    ///
+    /// High-level wrapper that handles QMP connection and invokes the underlying
+    /// resume operation. This restores vCPU execution after a pause.
+    ///
+    /// # Parameters
+    /// - `qmp_socket`: Path to the VM's QEMU Machine Protocol Unix socket
+    ///
+    /// # Operation
+    /// 1. Establishes QMP client connection to the socket
+    /// 2. Calls [`QmpClient::cont()`](crate::qemu::QmpClient::cont) to resume vCPU execution
+    /// 3. Returns after resume command is acknowledged
+    ///
+    /// For detailed information about resource effects, behavior, and use cases,
+    /// see [`QmpClient::cont()`](crate::qemu::QmpClient::cont).
+    ///
+    /// # Errors
+    /// - QMP socket connection failures
+    /// - Underlying QMP command errors
+    pub fn resume_vm(&self, qmp_socket: &std::path::Path) -> Result<()> {
+        tracing::info!("Resuming VM via QMP");
+
+        let mut qmp_client = crate::qemu::QmpClient::new();
+        qmp_client.connect(qmp_socket)?;
+        qmp_client.cont()?;
+
+        tracing::info!("VM resumed successfully");
+        Ok(())
+    }
+
+    /// Suspend VM to RAM by connecting to QMP and triggering ACPI S3 sleep.
+    ///
+    /// High-level wrapper that handles QMP connection and invokes the underlying
+    /// suspend operation. Unlike `pause_vm()`, this is a guest-cooperative operation
+    /// where the guest OS participates in the suspend sequence.
+    ///
+    /// # Parameters
+    /// - `qmp_socket`: Path to the VM's QEMU Machine Protocol Unix socket
+    ///
+    /// # Operation
+    /// 1. Establishes QMP client connection to the socket
+    /// 2. Calls [`QmpClient::system_suspend()`](crate::qemu::QmpClient::system_suspend) to trigger ACPI S3
+    /// 3. Returns after suspend command is sent (guest suspends asynchronously)
+    ///
+    /// For detailed information about ACPI requirements, resource effects, and use cases,
+    /// see [`QmpClient::system_suspend()`](crate::qemu::QmpClient::system_suspend).
+    ///
+    /// # Errors
+    /// - QMP socket connection failures
+    /// - Underlying QMP command errors (especially if guest lacks ACPI support)
+    pub fn suspend_vm(&self, qmp_socket: &std::path::Path) -> Result<()> {
+        tracing::info!("Suspending VM via QMP");
+
+        let mut qmp_client = crate::qemu::QmpClient::new();
+        qmp_client.connect(qmp_socket)?;
+        qmp_client.system_suspend()?;
+
+        tracing::info!("VM suspend command sent");
+        Ok(())
+    }
+
+    /// Wake VM from suspend by connecting to QMP and triggering ACPI wakeup.
+    ///
+    /// High-level wrapper that handles QMP connection and invokes the underlying
+    /// wakeup operation. This brings a suspended VM back to running state through
+    /// the guest's ACPI resume handlers.
+    ///
+    /// # Parameters
+    /// - `qmp_socket`: Path to the VM's QEMU Machine Protocol Unix socket
+    ///
+    /// # Operation
+    /// 1. Establishes QMP client connection to the socket
+    /// 2. Calls [`QmpClient::system_wakeup()`](crate::qemu::QmpClient::system_wakeup) to trigger ACPI wake event
+    /// 3. Returns after wake command is sent (guest resumes asynchronously)
+    ///
+    /// For detailed information about ACPI requirements, resource effects, and use cases,
+    /// see [`QmpClient::system_wakeup()`](crate::qemu::QmpClient::system_wakeup).
+    ///
+    /// # Errors
+    /// - QMP socket connection failures
+    /// - Underlying QMP command errors (especially if VM not in suspended state)
+    pub fn wake_vm(&self, qmp_socket: &std::path::Path) -> Result<()> {
+        tracing::info!("Waking VM via QMP");
+
+        let mut qmp_client = crate::qemu::QmpClient::new();
+        qmp_client.connect(qmp_socket)?;
+        qmp_client.system_wakeup()?;
+
+        tracing::info!("VM wakeup command sent");
+        Ok(())
+    }
+
+    /// Reset VM by connecting to QMP and triggering a hard reboot.
+    ///
+    /// High-level wrapper that handles QMP connection and invokes the underlying
+    /// reset operation. This performs an immediate hardware reset without graceful
+    /// shutdown - equivalent to pressing a physical reset button.
+    ///
+    /// # Parameters
+    /// - `qmp_socket`: Path to the VM's QEMU Machine Protocol Unix socket
+    ///
+    /// # Operation
+    /// 1. Establishes QMP client connection to the socket
+    /// 2. Calls [`QmpClient::system_reset()`](crate::qemu::QmpClient::system_reset) to trigger hard reset
+    /// 3. Returns after reset command is sent (VM reboots immediately)
+    ///
+    /// For detailed information about risks, resource effects, and use cases,
+    /// see [`QmpClient::system_reset()`](crate::qemu::QmpClient::system_reset).
+    ///
+    /// # Warning
+    /// This is a hard reset without graceful shutdown. May cause data loss or corruption.
+    ///
+    /// # Errors
+    /// - QMP socket connection failures
+    /// - Underlying QMP command errors
+    pub fn reset_vm(&self, qmp_socket: &std::path::Path) -> Result<()> {
+        tracing::info!("Resetting VM via QMP");
+
+        let mut qmp_client = crate::qemu::QmpClient::new();
+        qmp_client.connect(qmp_socket)?;
+        qmp_client.system_reset()?;
+
+        tracing::info!("VM reset command sent");
+        Ok(())
+    }
 }

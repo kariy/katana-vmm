@@ -148,7 +148,15 @@ pub async fn stop_instance(
                 name
             )));
         }
-        _ => {}
+        InstanceStatus::Running | InstanceStatus::Paused | InstanceStatus::Suspended => {
+            // Valid states for stopping
+        }
+        _ => {
+            return Err(ApiError::BadRequest(format!(
+                "Cannot stop instance '{}' from state: {}",
+                name, instance_state.status
+            )));
+        }
     }
 
     // Get PID
@@ -176,6 +184,268 @@ pub async fn stop_instance(
     state.db.save_instance(&instance_state)?;
 
     info!(name = %name, "Instance stopped successfully");
+
+    Ok(Json(instance_state_to_response(instance_state)))
+}
+
+/// Pause an instance
+/// POST /api/v1/instances/{name}/pause
+pub async fn pause_instance(
+    Extension(state): Extension<Arc<DaemonState>>,
+    Path(name): Path<String>,
+) -> ApiResult<Json<InstanceResponse>> {
+    info!(name = %name, "Pausing instance via API");
+
+    // Load instance from database
+    let mut instance_state = state.db.get_instance(&name)?;
+
+    // Check if already paused (idempotent)
+    if matches!(instance_state.status, InstanceStatus::Paused) {
+        info!(name = %name, "Instance already paused");
+        return Ok(Json(instance_state_to_response(instance_state)));
+    }
+
+    // Check if pausing (conflict)
+    if matches!(instance_state.status, InstanceStatus::Pausing) {
+        return Err(ApiError::Conflict(format!(
+            "Instance '{}' is already pausing",
+            name
+        )));
+    }
+
+    // Validate state transition
+    if !instance_state.status.can_pause() {
+        return Err(ApiError::BadRequest(format!(
+            "Cannot pause instance '{}' from state: {}",
+            name, instance_state.status
+        )));
+    }
+
+    // Get QMP socket
+    let qmp_socket = instance_state
+        .qmp_socket
+        .clone()
+        .ok_or_else(|| ApiError::Internal(format!("Instance '{}' has no QMP socket", name)))?;
+
+    // Update status to Pausing
+    instance_state.status = InstanceStatus::Pausing;
+    state.db.save_instance(&instance_state)?;
+
+    // Pause VM
+    state.vm_manager.pause_vm(&qmp_socket).map_err(|e| {
+        // Revert status on failure
+        instance_state.status = InstanceStatus::Running;
+        let _ = state.db.save_instance(&instance_state);
+        ApiError::Internal(format!("Failed to pause VM: {}", e))
+    })?;
+
+    // Update instance state
+    instance_state.status = InstanceStatus::Paused;
+    state.db.save_instance(&instance_state)?;
+
+    info!(name = %name, "Instance paused successfully");
+
+    Ok(Json(instance_state_to_response(instance_state)))
+}
+
+/// Resume an instance from pause or suspend
+/// POST /api/v1/instances/{name}/resume
+pub async fn resume_instance(
+    Extension(state): Extension<Arc<DaemonState>>,
+    Path(name): Path<String>,
+) -> ApiResult<Json<InstanceResponse>> {
+    info!(name = %name, "Resuming instance via API");
+
+    // Load instance from database
+    let mut instance_state = state.db.get_instance(&name)?;
+
+    // Check if already running (idempotent)
+    if matches!(instance_state.status, InstanceStatus::Running) {
+        info!(name = %name, "Instance already running");
+        return Ok(Json(instance_state_to_response(instance_state)));
+    }
+
+    // Check if resuming (conflict)
+    if matches!(instance_state.status, InstanceStatus::Resuming) {
+        return Err(ApiError::Conflict(format!(
+            "Instance '{}' is already resuming",
+            name
+        )));
+    }
+
+    // Validate state transition
+    if !instance_state.status.can_resume_from_pause() && !instance_state.status.can_wake() {
+        return Err(ApiError::BadRequest(format!(
+            "Cannot resume instance '{}' from state: {}",
+            name, instance_state.status
+        )));
+    }
+
+    // Get QMP socket
+    let qmp_socket = instance_state
+        .qmp_socket
+        .clone()
+        .ok_or_else(|| ApiError::Internal(format!("Instance '{}' has no QMP socket", name)))?;
+
+    let previous_state = instance_state.status.clone();
+
+    // Update status to Resuming
+    instance_state.status = InstanceStatus::Resuming;
+    state.db.save_instance(&instance_state)?;
+
+    // Resume VM (handles both pause and suspend resume)
+    let result = if matches!(previous_state, InstanceStatus::Suspended) {
+        state.vm_manager.wake_vm(&qmp_socket)
+    } else {
+        state.vm_manager.resume_vm(&qmp_socket)
+    };
+
+    result.map_err(|e| {
+        // Revert status on failure
+        instance_state.status = previous_state;
+        let _ = state.db.save_instance(&instance_state);
+        ApiError::Internal(format!("Failed to resume VM: {}", e))
+    })?;
+
+    // Update instance state
+    instance_state.status = InstanceStatus::Running;
+    state.db.save_instance(&instance_state)?;
+
+    info!(name = %name, "Instance resumed successfully");
+
+    Ok(Json(instance_state_to_response(instance_state)))
+}
+
+/// Suspend an instance to RAM
+/// POST /api/v1/instances/{name}/suspend
+pub async fn suspend_instance(
+    Extension(state): Extension<Arc<DaemonState>>,
+    Path(name): Path<String>,
+) -> ApiResult<Json<InstanceResponse>> {
+    info!(name = %name, "Suspending instance via API");
+
+    // Load instance from database
+    let mut instance_state = state.db.get_instance(&name)?;
+
+    // Check if already suspended (idempotent)
+    if matches!(instance_state.status, InstanceStatus::Suspended) {
+        info!(name = %name, "Instance already suspended");
+        return Ok(Json(instance_state_to_response(instance_state)));
+    }
+
+    // Check if suspending (conflict)
+    if matches!(instance_state.status, InstanceStatus::Suspending) {
+        return Err(ApiError::Conflict(format!(
+            "Instance '{}' is already suspending",
+            name
+        )));
+    }
+
+    // Validate state transition
+    if !instance_state.status.can_suspend() {
+        return Err(ApiError::BadRequest(format!(
+            "Cannot suspend instance '{}' from state: {}",
+            name, instance_state.status
+        )));
+    }
+
+    // Get QMP socket
+    let qmp_socket = instance_state
+        .qmp_socket
+        .clone()
+        .ok_or_else(|| ApiError::Internal(format!("Instance '{}' has no QMP socket", name)))?;
+
+    let previous_state = instance_state.status.clone();
+
+    // If paused, need to resume first before suspending
+    if matches!(previous_state, InstanceStatus::Paused) {
+        info!(name = %name, "Resuming from pause before suspend");
+        state.vm_manager.resume_vm(&qmp_socket).map_err(|e| {
+            ApiError::Internal(format!("Failed to resume before suspend: {}", e))
+        })?;
+    }
+
+    // Update status to Suspending
+    instance_state.status = InstanceStatus::Suspending;
+    state.db.save_instance(&instance_state)?;
+
+    // Suspend VM
+    state.vm_manager.suspend_vm(&qmp_socket).map_err(|e| {
+        // Revert status on failure
+        instance_state.status = previous_state;
+        let _ = state.db.save_instance(&instance_state);
+        ApiError::Internal(format!("Failed to suspend VM (guest may not support ACPI): {}", e))
+    })?;
+
+    // Update instance state
+    instance_state.status = InstanceStatus::Suspended;
+    state.db.save_instance(&instance_state)?;
+
+    info!(name = %name, "Instance suspended successfully");
+
+    Ok(Json(instance_state_to_response(instance_state)))
+}
+
+/// Reset/reboot an instance
+/// POST /api/v1/instances/{name}/reset
+pub async fn reset_instance(
+    Extension(state): Extension<Arc<DaemonState>>,
+    Path(name): Path<String>,
+) -> ApiResult<Json<InstanceResponse>> {
+    info!(name = %name, "Resetting instance via API");
+
+    // Load instance from database
+    let mut instance_state = state.db.get_instance(&name)?;
+
+    // Validate state transition
+    if !instance_state.status.can_reset() {
+        return Err(ApiError::BadRequest(format!(
+            "Cannot reset instance '{}' from state: {}",
+            name, instance_state.status
+        )));
+    }
+
+    // Get QMP socket
+    let qmp_socket = instance_state
+        .qmp_socket
+        .clone()
+        .ok_or_else(|| ApiError::Internal(format!("Instance '{}' has no QMP socket", name)))?;
+
+    let previous_state = instance_state.status.clone();
+
+    // If paused, resume first
+    if matches!(previous_state, InstanceStatus::Paused) {
+        info!(name = %name, "Resuming from pause before reset");
+        instance_state.status = InstanceStatus::Resuming;
+        state.db.save_instance(&instance_state)?;
+
+        state.vm_manager.resume_vm(&qmp_socket).map_err(|e| {
+            instance_state.status = previous_state;
+            let _ = state.db.save_instance(&instance_state);
+            ApiError::Internal(format!("Failed to resume before reset: {}", e))
+        })?;
+    }
+
+    // Update status to Starting (VM is rebooting)
+    instance_state.status = InstanceStatus::Starting;
+    state.db.save_instance(&instance_state)?;
+
+    // Reset VM
+    state.vm_manager.reset_vm(&qmp_socket).map_err(|e| {
+        // On failure, mark as Failed
+        let error_msg = format!("Failed to reset VM: {}", e);
+        instance_state.status = InstanceStatus::Failed {
+            error: error_msg.clone(),
+        };
+        let _ = state.db.save_instance(&instance_state);
+        ApiError::Internal(error_msg)
+    })?;
+
+    // VM will reboot - update to Running after reset completes
+    instance_state.status = InstanceStatus::Running;
+    state.db.save_instance(&instance_state)?;
+
+    info!(name = %name, "Instance reset successfully");
 
     Ok(Json(instance_state_to_response(instance_state)))
 }

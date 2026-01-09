@@ -114,6 +114,10 @@ fn api_routes() -> Router {
         // Instance operations
         .route("/instances/:name/start", post(api::start_instance))
         .route("/instances/:name/stop", post(api::stop_instance))
+        .route("/instances/:name/pause", post(api::pause_instance))
+        .route("/instances/:name/resume", post(api::resume_instance))
+        .route("/instances/:name/suspend", post(api::suspend_instance))
+        .route("/instances/:name/reset", post(api::reset_instance))
         // Monitoring
         .route("/instances/:name/logs", get(api::get_logs))
         .route("/instances/:name/logs/stream", get(api::stream_logs))
