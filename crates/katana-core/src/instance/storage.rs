@@ -3,6 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Minimum storage size in bytes (50MB)
+const MIN_STORAGE_SIZE: u64 = 50 * 1024 * 1024;
+
 pub struct StorageManager {
     base_dir: PathBuf,
 }
@@ -14,6 +17,15 @@ impl StorageManager {
 
     /// Create storage directory for an instance with a qcow2 disk image
     pub fn create_instance_storage(&self, instance_id: &str, quota_bytes: u64) -> Result<PathBuf> {
+        // Validate minimum storage size
+        if quota_bytes < MIN_STORAGE_SIZE {
+            return Err(HypervisorError::InvalidConfig(format!(
+                "Storage size must be at least {} MB (requested: {} bytes)",
+                MIN_STORAGE_SIZE / (1024 * 1024),
+                quota_bytes
+            )));
+        }
+
         let instance_dir = self.base_dir.join(instance_id);
 
         // Create instance directory
@@ -21,11 +33,14 @@ impl StorageManager {
 
         // Create qcow2 disk image for persistent storage
         let disk_image = instance_dir.join("katana-data.qcow2");
-        let size_gb = quota_bytes / (1024 * 1024 * 1024);
+
+        // Calculate size in MB for better precision (minimum 50MB)
+        let size_mb = quota_bytes / (1024 * 1024);
 
         tracing::info!(
             instance_id = %instance_id,
-            size_gb = size_gb,
+            size_mb = size_mb,
+            size_bytes = quota_bytes,
             path = %disk_image.display(),
             "Creating qcow2 disk image"
         );
@@ -38,7 +53,7 @@ impl StorageManager {
                 disk_image.to_str().ok_or_else(|| {
                     HypervisorError::InvalidConfig("Invalid disk image path".into())
                 })?,
-                &format!("{}G", size_gb),
+                &format!("{size_mb}M"),
             ])
             .status()
             .map_err(|e| {
@@ -85,7 +100,7 @@ impl StorageManager {
     /// Format a qcow2 image using qemu-nbd
     fn format_qcow2_with_nbd(disk_image: &Path) -> Result<()> {
         // Find an available nbd device
-        let nbd_device = "/dev/nbd0";
+        let nbd_device = Self::find_available_nbd()?;
 
         // Load nbd kernel module if not loaded (best effort)
         let _ = Command::new("modprobe").arg("nbd").status();
@@ -95,7 +110,7 @@ impl StorageManager {
         let status = Command::new("qemu-nbd")
             .args(&[
                 "--connect",
-                nbd_device,
+                &nbd_device,
                 disk_image.to_str().ok_or_else(|| {
                     HypervisorError::InvalidConfig("Invalid disk image path".into())
                 })?,
@@ -117,15 +132,23 @@ impl StorageManager {
         // Format the nbd device
         tracing::debug!("Formatting {} with ext4", nbd_device);
         let format_result = Command::new("mkfs.ext4")
-            .args(&["-F", nbd_device])
+            .args(&["-F", &nbd_device])
             .output()
             .map_err(|e| HypervisorError::InvalidConfig(format!("Failed to run mkfs.ext4: {}", e)));
 
         // Disconnect nbd device (always do this, even if formatting failed)
         tracing::debug!("Disconnecting {}", nbd_device);
-        let _ = Command::new("qemu-nbd")
-            .args(&["--disconnect", nbd_device])
+        let disconnect_result = Command::new("qemu-nbd")
+            .args(&["--disconnect", &nbd_device])
             .status();
+
+        if let Err(e) = disconnect_result {
+            tracing::warn!("Failed to disconnect NBD device {}: {}", nbd_device, e);
+        } else if let Ok(status) = disconnect_result {
+            if !status.success() {
+                tracing::warn!("NBD disconnect command failed for {}", nbd_device);
+            }
+        }
 
         // Check formatting result
         match format_result {

@@ -1197,6 +1197,7 @@ name = "katana-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "byte-unit",
  "clap",
  "comfy-table",
  "dirs",
