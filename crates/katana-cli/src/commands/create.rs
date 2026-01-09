@@ -33,6 +33,9 @@ pub async fn execute(
 
     let response = client.create_instance(request).await?;
 
+    // Automatically start the instance after creation
+    let response = client.start_instance(&response.name).await?;
+
     match output_format {
         OutputFormat::Json => {
             let json_value = serde_json::to_value(&response)?;
@@ -40,7 +43,7 @@ pub async fn execute(
         }
         OutputFormat::Table => {
             format::print_instance_details(&response);
-            println!("\n✓ Instance created successfully!");
+            println!("\n✓ Instance created and started successfully!");
         }
     }
 
