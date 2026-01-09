@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use katana_core::{
     instance::StorageManager,
     port::PortAllocator,
-    qemu::VmManager,
     state::StateDatabase,
 };
 use std::path::PathBuf;
@@ -11,7 +10,6 @@ use std::path::PathBuf;
 pub struct DaemonState {
     pub db: StateDatabase,
     pub storage: StorageManager,
-    pub vm_manager: VmManager,
     pub port_allocator: PortAllocator,
 }
 
@@ -45,14 +43,11 @@ impl DaemonState {
 
         let storage = StorageManager::new(instances_dir);
 
-        let vm_manager = VmManager::new();
-
         let port_allocator = PortAllocator::new(db.clone());
 
         Ok(Self {
             db,
             storage,
-            vm_manager,
             port_allocator,
         })
     }

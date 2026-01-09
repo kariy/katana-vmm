@@ -1,13 +1,13 @@
 use katana_hypervisor::{
     instance::{config::InstanceConfig, state::InstanceStatus, storage::StorageManager},
     port::allocator::PortAllocator,
-    qemu::{config::QemuConfig, vm::VmManager},
+    qemu::config::QemuConfig,
     state::db::StateDatabase,
 };
 use std::path::PathBuf;
 use tempfile::TempDir;
 
-fn create_test_environment() -> (StateDatabase, StorageManager, PortAllocator, VmManager, TempDir, TempDir) {
+fn create_test_environment() -> (StateDatabase, StorageManager, PortAllocator, TempDir, TempDir) {
     let state_temp = TempDir::new().unwrap();
     let storage_temp = TempDir::new().unwrap();
 
@@ -16,9 +16,8 @@ fn create_test_environment() -> (StateDatabase, StorageManager, PortAllocator, V
 
     let storage = StorageManager::new(storage_temp.path().to_path_buf());
     let port_allocator = PortAllocator::new(db.clone());
-    let vm_manager = VmManager::new();
 
-    (db, storage, port_allocator, vm_manager, state_temp, storage_temp)
+    (db, storage, port_allocator, state_temp, storage_temp)
 }
 
 fn create_test_config(rpc_port: u16) -> InstanceConfig {
@@ -46,7 +45,7 @@ fn create_test_config(rpc_port: u16) -> InstanceConfig {
 
 #[test]
 fn test_full_instance_lifecycle() {
-    let (db, storage, port_allocator, _vm_manager, _state_temp, _storage_temp) = create_test_environment();
+    let (db, storage, port_allocator, _state_temp, _storage_temp) = create_test_environment();
 
     // Allocate port (use high port number unlikely to be in use)
     let base_port = 55000u16;
@@ -103,7 +102,7 @@ fn test_full_instance_lifecycle() {
 
 #[test]
 fn test_multiple_instances_isolation() {
-    let (db, storage, port_allocator, _vm_manager, _state_temp, _storage_temp) = create_test_environment();
+    let (db, storage, port_allocator, _state_temp, _storage_temp) = create_test_environment();
 
     let base_port = 55000u16;
 
@@ -167,7 +166,7 @@ fn test_multiple_instances_isolation() {
 
 #[test]
 fn test_port_reallocation_after_delete() {
-    let (db, _storage, port_allocator, _vm_manager, _state_temp, _storage_temp) = create_test_environment();
+    let (db, _storage, port_allocator, _state_temp, _storage_temp) = create_test_environment();
 
     let base_port = 55000u16;
 
@@ -218,7 +217,7 @@ fn test_port_reallocation_after_delete() {
 
 #[test]
 fn test_storage_quota_enforcement() {
-    let (db, storage, port_allocator, _vm_manager, _state_temp, _storage_temp) = create_test_environment();
+    let (db, storage, port_allocator, _state_temp, _storage_temp) = create_test_environment();
 
     let port = port_allocator.allocate_port(5050).unwrap();
     let config = create_test_config(port);
@@ -252,7 +251,7 @@ fn test_storage_quota_enforcement() {
 
 #[test]
 fn test_qemu_config_generation_non_tee() {
-    let (_db, storage, _port_allocator, _vm_manager, _state_temp, _storage_temp) = create_test_environment();
+    let (_db, storage, _port_allocator, _state_temp, _storage_temp) = create_test_environment();
 
     let instance_id = "config-test";
     storage.create_instance_storage(instance_id, 1_000_000_000).unwrap();
@@ -298,7 +297,7 @@ fn test_qemu_config_generation_non_tee() {
 
 #[test]
 fn test_state_persistence_across_operations() {
-    let (db, storage, _port_allocator, _vm_manager, _state_temp, _storage_temp) = create_test_environment();
+    let (db, storage, _port_allocator, _state_temp, _storage_temp) = create_test_environment();
 
     let instance_id = "persist-test";
     let config = create_test_config(5050);
@@ -353,7 +352,7 @@ fn test_state_persistence_across_operations() {
 
 #[test]
 fn test_error_state_handling() {
-    let (db, storage, _port_allocator, _vm_manager, _state_temp, _storage_temp) = create_test_environment();
+    let (db, storage, _port_allocator, _state_temp, _storage_temp) = create_test_environment();
 
     let instance_id = "error-test";
     let config = create_test_config(5050);
@@ -389,7 +388,7 @@ fn test_error_state_handling() {
 
 #[test]
 fn test_concurrent_instance_creation() {
-    let (db, storage, port_allocator, _vm_manager, _state_temp, _storage_temp) = create_test_environment();
+    let (db, storage, port_allocator, _state_temp, _storage_temp) = create_test_environment();
 
     let base_port = 55000u16;
 

@@ -1,6 +1,6 @@
 use crate::{error::ApiError, state::DaemonState};
 use axum::{extract::Path, response::Json, Extension};
-use katana_core::{instance::InstanceStatus, qemu::QmpClient};
+use katana_core::{instance::InstanceStatus, qemu::{ManagedVm, QmpClient}};
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -66,21 +66,18 @@ pub async fn get_stats(
         )));
     }
 
-    // Verify VM process is actually running
-    let pid = instance_state.vm_pid;
-    if let Some(pid) = pid {
-        if !state.vm_manager.is_process_running(pid) {
-            return Err(ApiError::BadRequest(format!(
-                "Instance '{}' VM process (PID: {}) is not running",
-                name, pid
-            )));
-        }
-    } else {
+    // Verify VM process is actually running using ManagedVm
+    let managed_vm = ManagedVm::from_instance(&instance_state.id, &state.db)
+        .map_err(|e| ApiError::Internal(format!("Failed to load VM instance: {}", e)))?;
+
+    if !managed_vm.is_running() {
         return Err(ApiError::BadRequest(format!(
-            "Instance '{}' has no PID recorded",
+            "Instance '{}' VM process is not running",
             name
         )));
     }
+
+    let pid = managed_vm.pid();
 
     let qmp_socket = instance_state.qmp_socket.ok_or_else(|| {
         ApiError::NotFound("Instance has no QMP socket".to_string())

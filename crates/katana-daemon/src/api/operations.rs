@@ -4,7 +4,7 @@ use axum::{
 };
 use katana_core::{
     instance::InstanceStatus,
-    qemu::config::{QemuConfig, SevSnpConfig},
+    qemu::{config::{QemuConfig, SevSnpConfig}, ManagedVm},
 };
 use std::sync::Arc;
 use tracing::info;
@@ -56,10 +56,6 @@ pub async fn start_instance(
         )));
     }
 
-    // Update status to Starting
-    instance_state.status = InstanceStatus::Starting;
-    state.db.save_instance(&instance_state)?;
-
     // Build katana arguments
     let katana_args = instance_state.config.build_katana_args();
     let kernel_cmdline = QemuConfig::build_kernel_cmdline(&katana_args);
@@ -104,23 +100,25 @@ pub async fn start_instance(
         "Launching VM"
     );
 
-    // Launch VM
-    let pid = state.vm_manager.launch_vm(&qemu_config).map_err(|e| {
-        // Revert status on failure
-        let error_msg = format!("Failed to launch VM: {}", e);
-        instance_state.status = InstanceStatus::Failed {
-            error: error_msg.clone(),
-        };
-        let _ = state.db.save_instance(&instance_state);
-        ApiError::Internal(error_msg)
+    // Launch VM using ManagedVm (automatically handles state tracking)
+    let mut managed_vm = ManagedVm::new(
+        instance_state.id.clone(),
+        qemu_config,
+        state.db.clone(),
+    );
+
+    managed_vm.launch().map_err(|e| {
+        ApiError::Internal(format!("Failed to launch VM: {}", e))
     })?;
 
-    // Update instance state
-    instance_state.status = InstanceStatus::Running;
-    instance_state.vm_pid = Some(pid);
-    state.db.save_instance(&instance_state)?;
+    // Reload instance state from database (updated by ManagedVm)
+    instance_state = state.db.get_instance(&name)?;
 
-    info!(name = %name, pid = %pid, "Instance started successfully");
+    info!(
+        name = %name,
+        pid = ?instance_state.vm_pid,
+        "Instance started successfully"
+    );
 
     Ok(Json(instance_state_to_response(instance_state)))
 }
@@ -159,29 +157,21 @@ pub async fn stop_instance(
         }
     }
 
-    // Get PID
-    let pid = instance_state
-        .vm_pid
-        .ok_or_else(|| ApiError::Internal(format!("Instance '{}' has no PID", name)))?;
+    // Get PID for logging
+    let pid = instance_state.vm_pid;
 
-    // Update status to Stopping
-    instance_state.status = InstanceStatus::Stopping;
-    state.db.save_instance(&instance_state)?;
+    info!(name = %name, pid = ?pid, "Stopping VM");
 
-    info!(name = %name, pid = %pid, "Stopping VM");
+    // Stop VM using ManagedVm (automatically handles state tracking)
+    let mut managed_vm = ManagedVm::from_instance(&instance_state.id, &state.db)
+        .map_err(|e| ApiError::Internal(format!("Failed to load VM instance: {}", e)))?;
 
-    // Stop VM
-    state.vm_manager.stop_vm(pid, 30).map_err(|e| {
-        // Revert status on failure
-        instance_state.status = InstanceStatus::Running;
-        let _ = state.db.save_instance(&instance_state);
+    managed_vm.stop(30).map_err(|e| {
         ApiError::Internal(format!("Failed to stop VM: {}", e))
     })?;
 
-    // Update instance state
-    instance_state.status = InstanceStatus::Stopped;
-    instance_state.vm_pid = None;
-    state.db.save_instance(&instance_state)?;
+    // Reload instance state from database (updated by ManagedVm)
+    instance_state = state.db.get_instance(&name)?;
 
     info!(name = %name, "Instance stopped successfully");
 
@@ -221,27 +211,16 @@ pub async fn pause_instance(
         )));
     }
 
-    // Get QMP socket
-    let qmp_socket = instance_state
-        .qmp_socket
-        .clone()
-        .ok_or_else(|| ApiError::Internal(format!("Instance '{}' has no QMP socket", name)))?;
+    // Pause VM using ManagedVm (automatically handles state tracking)
+    let managed_vm = ManagedVm::from_instance(&instance_state.id, &state.db)
+        .map_err(|e| ApiError::Internal(format!("Failed to load VM instance: {}", e)))?;
 
-    // Update status to Pausing
-    instance_state.status = InstanceStatus::Pausing;
-    state.db.save_instance(&instance_state)?;
-
-    // Pause VM
-    state.vm_manager.pause_vm(&qmp_socket).map_err(|e| {
-        // Revert status on failure
-        instance_state.status = InstanceStatus::Running;
-        let _ = state.db.save_instance(&instance_state);
+    managed_vm.pause().map_err(|e| {
         ApiError::Internal(format!("Failed to pause VM: {}", e))
     })?;
 
-    // Update instance state
-    instance_state.status = InstanceStatus::Paused;
-    state.db.save_instance(&instance_state)?;
+    // Reload instance state from database (updated by ManagedVm)
+    instance_state = state.db.get_instance(&name)?;
 
     info!(name = %name, "Instance paused successfully");
 
@@ -281,35 +260,25 @@ pub async fn resume_instance(
         )));
     }
 
-    // Get QMP socket
-    let qmp_socket = instance_state
-        .qmp_socket
-        .clone()
-        .ok_or_else(|| ApiError::Internal(format!("Instance '{}' has no QMP socket", name)))?;
+    let is_suspended = matches!(instance_state.status, InstanceStatus::Suspended);
 
-    let previous_state = instance_state.status.clone();
-
-    // Update status to Resuming
-    instance_state.status = InstanceStatus::Resuming;
-    state.db.save_instance(&instance_state)?;
+    // Resume VM using ManagedVm (automatically handles state tracking)
+    let managed_vm = ManagedVm::from_instance(&instance_state.id, &state.db)
+        .map_err(|e| ApiError::Internal(format!("Failed to load VM instance: {}", e)))?;
 
     // Resume VM (handles both pause and suspend resume)
-    let result = if matches!(previous_state, InstanceStatus::Suspended) {
-        state.vm_manager.wake_vm(&qmp_socket)
+    if is_suspended {
+        managed_vm.wake().map_err(|e| {
+            ApiError::Internal(format!("Failed to wake VM: {}", e))
+        })?;
     } else {
-        state.vm_manager.resume_vm(&qmp_socket)
-    };
+        managed_vm.resume().map_err(|e| {
+            ApiError::Internal(format!("Failed to resume VM: {}", e))
+        })?;
+    }
 
-    result.map_err(|e| {
-        // Revert status on failure
-        instance_state.status = previous_state;
-        let _ = state.db.save_instance(&instance_state);
-        ApiError::Internal(format!("Failed to resume VM: {}", e))
-    })?;
-
-    // Update instance state
-    instance_state.status = InstanceStatus::Running;
-    state.db.save_instance(&instance_state)?;
+    // Reload instance state from database (updated by ManagedVm)
+    instance_state = state.db.get_instance(&name)?;
 
     info!(name = %name, "Instance resumed successfully");
 
@@ -349,37 +318,27 @@ pub async fn suspend_instance(
         )));
     }
 
-    // Get QMP socket
-    let qmp_socket = instance_state
-        .qmp_socket
-        .clone()
-        .ok_or_else(|| ApiError::Internal(format!("Instance '{}' has no QMP socket", name)))?;
+    let is_paused = matches!(instance_state.status, InstanceStatus::Paused);
 
-    let previous_state = instance_state.status.clone();
+    // Suspend VM using ManagedVm (automatically handles state tracking)
+    let managed_vm = ManagedVm::from_instance(&instance_state.id, &state.db)
+        .map_err(|e| ApiError::Internal(format!("Failed to load VM instance: {}", e)))?;
 
     // If paused, need to resume first before suspending
-    if matches!(previous_state, InstanceStatus::Paused) {
+    if is_paused {
         info!(name = %name, "Resuming from pause before suspend");
-        state.vm_manager.resume_vm(&qmp_socket).map_err(|e| {
+        managed_vm.resume().map_err(|e| {
             ApiError::Internal(format!("Failed to resume before suspend: {}", e))
         })?;
     }
 
-    // Update status to Suspending
-    instance_state.status = InstanceStatus::Suspending;
-    state.db.save_instance(&instance_state)?;
-
     // Suspend VM
-    state.vm_manager.suspend_vm(&qmp_socket).map_err(|e| {
-        // Revert status on failure
-        instance_state.status = previous_state;
-        let _ = state.db.save_instance(&instance_state);
+    managed_vm.suspend().map_err(|e| {
         ApiError::Internal(format!("Failed to suspend VM (guest may not support ACPI): {}", e))
     })?;
 
-    // Update instance state
-    instance_state.status = InstanceStatus::Suspended;
-    state.db.save_instance(&instance_state)?;
+    // Reload instance state from database (updated by ManagedVm)
+    instance_state = state.db.get_instance(&name)?;
 
     info!(name = %name, "Instance suspended successfully");
 
@@ -405,45 +364,27 @@ pub async fn reset_instance(
         )));
     }
 
-    // Get QMP socket
-    let qmp_socket = instance_state
-        .qmp_socket
-        .clone()
-        .ok_or_else(|| ApiError::Internal(format!("Instance '{}' has no QMP socket", name)))?;
+    let is_paused = matches!(instance_state.status, InstanceStatus::Paused);
 
-    let previous_state = instance_state.status.clone();
+    // Reset VM using ManagedVm (automatically handles state tracking)
+    let managed_vm = ManagedVm::from_instance(&instance_state.id, &state.db)
+        .map_err(|e| ApiError::Internal(format!("Failed to load VM instance: {}", e)))?;
 
     // If paused, resume first
-    if matches!(previous_state, InstanceStatus::Paused) {
+    if is_paused {
         info!(name = %name, "Resuming from pause before reset");
-        instance_state.status = InstanceStatus::Resuming;
-        state.db.save_instance(&instance_state)?;
-
-        state.vm_manager.resume_vm(&qmp_socket).map_err(|e| {
-            instance_state.status = previous_state;
-            let _ = state.db.save_instance(&instance_state);
+        managed_vm.resume().map_err(|e| {
             ApiError::Internal(format!("Failed to resume before reset: {}", e))
         })?;
     }
 
-    // Update status to Starting (VM is rebooting)
-    instance_state.status = InstanceStatus::Starting;
-    state.db.save_instance(&instance_state)?;
-
     // Reset VM
-    state.vm_manager.reset_vm(&qmp_socket).map_err(|e| {
-        // On failure, mark as Failed
-        let error_msg = format!("Failed to reset VM: {}", e);
-        instance_state.status = InstanceStatus::Failed {
-            error: error_msg.clone(),
-        };
-        let _ = state.db.save_instance(&instance_state);
-        ApiError::Internal(error_msg)
+    managed_vm.reset().map_err(|e| {
+        ApiError::Internal(format!("Failed to reset VM: {}", e))
     })?;
 
-    // VM will reboot - update to Running after reset completes
-    instance_state.status = InstanceStatus::Running;
-    state.db.save_instance(&instance_state)?;
+    // Reload instance state from database (updated by ManagedVm)
+    instance_state = state.db.get_instance(&name)?;
 
     info!(name = %name, "Instance reset successfully");
 
